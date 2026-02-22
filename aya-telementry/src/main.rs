@@ -1,7 +1,10 @@
 use aya::programs::TracePoint;
+use aya::maps::RingBuf;
 #[rustfmt::skip]
 use log::{debug, warn};
 use tokio::signal;
+use std::time::Duration;
+use aya_telementry_common::Event;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -48,26 +51,44 @@ async fn main() -> anyhow::Result<()> {
     program.attach("net", "netif_receive_skb")?;
     // program.attach("syscalls", "sys_enter_execve")?;
 
-    let mut ringbuf = RingBuffer::new(bpf.map_mut("EVENTS")?)?;
+    let mut ringbuf = RingBuf::try_from(ebpf.take_map("EVENTS").unwrap())?;
 
     println!("Listening for events...");
 
-    ringbuf.poll(std::time::Duration::from_millis(100), |data| {
-        let event = unsafe { &*(data.as_ptr() as *const Event) };
-
-        println!(
-            "Event → pid={} timestamp={}",
-            event.pid,
-            event.timestamp
-        );
-
-        Ok(())
-    })?;
-
-    let ctrl_c = signal::ctrl_c();
-    println!("Waiting for Ctrl-C...");
-    ctrl_c.await?;
-    println!("Exiting...");
+    loop {
+        tokio::select! {
+            _ = signal::ctrl_c() => {
+                println!("Ctrl-C received, exiting...");
+                break;
+            }
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                while let Some(item) = ringbuf.next() {
+                    let bytes = item.as_ref();
+                    if bytes.len() >= std::mem::size_of::<Event>() {
+                        let event = unsafe { &*(bytes.as_ptr() as *const Event) };
+                        
+                        let proto_name = match event.protocol {
+                            0x0800 => "IPv4",
+                            0x0806 => "ARP",
+                            0x86dd => "IPv6",
+                            0x8100 => "VLAN",
+                            0x88cc => "LLDP",
+                            _ => "Other",
+                        };
+                        
+                        println!(
+                            "📦 pid={:<6} if={} len={:<5} proto={} (0x{:04x})",
+                            event.pid,
+                            event.ifindex,
+                            event.pkt_len,
+                            proto_name,
+                            event.protocol
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     Ok(())
 }
