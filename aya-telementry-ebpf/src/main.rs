@@ -42,12 +42,131 @@ fn try_aya_telementry(ctx: TracePointContext) -> Result<u32, u32> {
     // on x86_64 little-endian, we need to swap bytes to get standard protocol numbers
     let protocol = protocol_raw.swap_bytes();
 
+    // QUIC detection variables
+    let mut is_udp = 0u8;
+    let mut is_quic = 0u8;
+    let mut is_long = 0u8;
+    let mut cid_version = 0u8;
+
+    // Read sk_buff.data pointer (offset varies, typically around 216 for kernel 6.x)
+    // This points to the start of packet data
+    let data_ptr: *const u8 = unsafe {
+        bpf_probe_read_kernel(skb_ptr.add(216) as *const *const u8).unwrap_or(core::ptr::null())
+    };
+
+    // Only parse if we have enough data for Ethernet + IP + UDP + QUIC headers
+    if !data_ptr.is_null() && len > 42 {
+        // Read first 64 bytes of packet data
+        // We need to read byte by byte since bpf_probe_read_kernel returns a single value
+        let mut pkt_data = [0u8; 64];
+        
+        unsafe {
+            // Read packet data in chunks or use a safer approach
+            for i in 0..64 {
+                if let Ok(byte) = bpf_probe_read_kernel(data_ptr.add(i) as *const u8) {
+                    pkt_data[i] = byte;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // parse based on Ethernet type
+        // assuming no VLAN for now
+        
+        // check if IPv4 (protocol 0x0800) or IPv6 (0x86dd)
+        if protocol == 0x0800 {
+            // IPv4: IP protocol field is at offset 9 in IP header (offset 14+9=23 from Ethernet)
+            let ip_proto = pkt_data[23];
+            
+            if ip_proto == 17 {
+                is_udp = 1;
+
+                // UDP header starts at offset 14 (Ethernet) + 20 (IPv4 min) = 34
+                // UDP dest port is at offset 34 + 2 = 36 (2 bytes, big endian)
+                let udp_dest_port = ((pkt_data[36] as u16) << 8) | (pkt_data[37] as u16);
+
+                // Check for common QUIC ports: 443 (HTTPS), 4433 
+                if udp_dest_port == 443 || udp_dest_port == 4433 {
+                    // QUIC payload starts after UDP header (8 bytes)
+                    // Offset: 14 (Eth) + 20 (IP) + 8 (UDP) = 42
+                    let quic_offset = 42;
+
+                    if quic_offset < 64 {
+                        let quic_flags = pkt_data[quic_offset];
+
+                        // QUIC packets have specific flag patterns
+                        // Long header: bit 7 (0x80) is set
+                        // Short header: bit 7 is not set
+                        
+                        // Check if it looks like QUIC (either long or short header)
+                        // Long header always has 0x80 set
+                        if quic_flags & 0x80 != 0 {
+                            is_quic = 1;
+                            is_long = 1;
+
+                            // In QUIC long header:
+                            // Byte 0: flags
+                            // Bytes 1-4: version
+                            // Byte 5: DCID len
+                            // Byte 6+: DCID (first byte is our CID version)
+                            if quic_offset + 6 < 64 {
+                                cid_version = pkt_data[quic_offset + 6];
+                            }
+                        } else if quic_flags & 0x40 != 0 {
+                            // Short header: bit 6 (0x40) set, bit 7 clear
+                            // This is a heuristic - short headers don't have a fixed pattern
+                            is_quic = 1;
+                            is_long = 0;
+                            // Short headers don't expose CID version easily
+                        }
+                    }
+                }
+            }
+        } else if protocol == 0x86dd {
+            // IPv6: Next header field is at offset 6 in IPv6 header (offset 14+6=20)
+            let ip_proto = pkt_data[20];
+            
+            if ip_proto == 17 {
+                is_udp = 1;
+
+                // UDP header starts at offset 14 (Ethernet) + 40 (IPv6) = 54
+                // But we only read 64 bytes, so be careful
+                if len > 54 + 8 {
+                    let udp_dest_port = ((pkt_data[56] as u16) << 8) | (pkt_data[57] as u16);
+
+                    if udp_dest_port == 443 || udp_dest_port == 4433 || udp_dest_port == 8000 {
+                        // QUIC offset: 14 (Eth) + 40 (IPv6) + 8 (UDP) = 62
+                        let quic_offset = 62;
+
+                        if quic_offset < 64 {
+                            let quic_flags = pkt_data[quic_offset];
+
+                            if quic_flags & 0x80 != 0 {
+                                is_quic = 1;
+                                is_long = 1;
+                                // Can't read CID safely with only 64 bytes for IPv6
+                            } else if quic_flags & 0x40 != 0 {
+                                is_quic = 1;
+                                is_long = 0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let event = Event {
         pid,
         timestamp: ts,
         pkt_len: len,
         ifindex,
         protocol,
+        is_udp,
+        is_quic,
+        is_long_header: is_long,
+        cid_version,
     };
 
     if let Some(mut entry) = EVENTS.reserve::<Event>(0) {
@@ -55,7 +174,11 @@ fn try_aya_telementry(ctx: TracePointContext) -> Result<u32, u32> {
         entry.submit(0);
     }
 
-    info!(&ctx, "from pid: {},pkt: len={} proto=0x{:x} if={}", pid,len, protocol, ifindex);
+    if is_quic == 1 {
+        info!(&ctx, "QUIC detected! pid={} len={} long={} cid_ver={}", 
+              pid, len, is_long, cid_version);
+    }
+
     Ok(0)
 }
 

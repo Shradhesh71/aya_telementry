@@ -54,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
     let mut ringbuf = RingBuf::try_from(ebpf.take_map("EVENTS").unwrap())?;
 
     println!("Listening for events...");
+    println!("Watching for QUIC packets on ports 443, 4433, 8000...\n");
 
     loop {
         tokio::select! {
@@ -76,14 +77,43 @@ async fn main() -> anyhow::Result<()> {
                             _ => "Other",
                         };
                         
-                        println!(
-                            "📦 pid={:<6} if={} len={:<5} proto={} (0x{:04x})",
-                            event.pid,
-                            event.ifindex,
-                            event.pkt_len,
-                            proto_name,
-                            event.protocol
-                        );
+                        // highlight QUIC packets
+                        if event.is_quic == 1 {
+                            let header_type = if event.is_long_header == 1 {
+                                "Long"
+                            } else {
+                                "Short"
+                            };
+                            
+                            println!(
+                                "🔷 QUIC! pid={:<6} if={} len={:<5} {} hdr | CID v{} | {}",
+                                event.pid,
+                                event.ifindex,
+                                event.pkt_len,
+                                header_type,
+                                event.cid_version,
+                                proto_name,
+                            );
+                        } else if event.is_udp == 1 {
+                            // UDP (non-QUIC) packets with less prominence
+                            println!(
+                                "📤 UDP   pid={:<6} if={} len={:<5} {}",
+                                event.pid,
+                                event.ifindex,
+                                event.pkt_len,
+                                proto_name,
+                            );
+                        }
+                        // show all packets 
+                        // else {
+                        //     println!(
+                        //         "📦 pid={:<6} if={} len={:<5} {}",
+                        //         event.pid,
+                        //         event.ifindex,
+                        //         event.pkt_len,
+                        //         proto_name,
+                        //     );
+                        // }
                     }
                 }
             }
@@ -92,3 +122,4 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+                    
