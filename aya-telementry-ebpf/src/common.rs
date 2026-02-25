@@ -1,23 +1,41 @@
-use aya_ebpf::{macros::map, maps::RingBuf};
+use aya_ebpf::{macros::map, maps::{RingBuf}};
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct Event {
+    // step 1
     pub pid: u32,
     pub timestamp: u64,
+
+    // step 2
     pub pkt_len: u32,
     pub ifindex: u32,
     pub protocol: u16,
 
+    // step 3
     pub is_udp: u8,
     pub is_quic: u8,
     pub is_long_header: u8,
 
+
+    pub dcid_len: u8,
     pub cid_version: u8,
+
+    // step 4 - backend and queue info
+    pub backend_id: u16,
+    pub queue_id: u16,
+
+    pub cid: [u8; 20],
 }
 
 #[map]
 pub static EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
+
+
+// struct Stats {
+//     packets: u64,
+//     bytes: u64,
+// }
 
 // #[repr(C)]
 // pub struct SkBuff {

@@ -1,36 +1,62 @@
 # aya-telementry
 
+A high-performance network telemetry tool built with eBPF and Aya framework for real-time packet analysis and QUIC protocol detection.
+
+## Overview
+
+This tool monitors network packets at the kernel level using eBPF tracepoints, providing deep visibility into network traffic with minimal overhead. It specializes in detecting and analyzing QUIC protocol packets (HTTP/3 transport layer) while capturing essential metadata from all network traffic.
+
+## Features
+
+- Real-time packet capture using eBPF tracepoints
+- QUIC protocol detection and analysis for both IPv4 and IPv6
+- Connection ID (CID) extraction and version tracking
+- Support for standard QUIC ports (443, 4433, 8000)
+- UDP traffic monitoring
+- Backend ID and queue ID identification from QUIC connection IDs
+- Low-overhead kernel-level packet inspection
+- Ring buffer-based event communication
+
 ## Prerequisites
 
-1. stable rust toolchains: `rustup toolchain install stable`
-1. nightly rust toolchains: `rustup toolchain install nightly --component rust-src`
-1. (if cross-compiling) rustup target: `rustup target add ${ARCH}-unknown-linux-musl`
-1. (if cross-compiling) LLVM: (e.g.) `brew install llvm` (on macOS)
-1. (if cross-compiling) C toolchain: (e.g.) [`brew install filosottile/musl-cross/musl-cross`](https://github.com/FiloSottile/homebrew-musl-cross) (on macOS)
-1. bpf-linker: `cargo install bpf-linker` (`--no-default-features` on macOS)
+### Required
+- Stable Rust toolchain: `rustup toolchain install stable`
+- Nightly Rust toolchain: `rustup toolchain install nightly --component rust-src`
+- bpf-linker: `cargo install bpf-linker` (use `--no-default-features` on macOS)
+
+### For Cross-Compilation
+- Target architecture: `rustup target add ${ARCH}-unknown-linux-musl`
+- LLVM toolchain (macOS): `brew install llvm`
+- musl C toolchain (macOS): `brew install filosottile/musl-cross/musl-cross`
 
 ## Build & Run
 
-Use `cargo build`, `cargo check`, etc. as normal. Run your program with:
+Build and run the project in release mode:
 
 ```shell
+cargo build --release
 cargo run --release
 ```
 
-Cargo build scripts are used to automatically build the eBPF correctly and include it in the
-program.
+The eBPF program is automatically compiled and embedded during the build process.
 
-## Cross-compiling on macOS
+## Cross-Compilation (macOS)
 
-Cross compilation should work on both Intel and Apple Silicon Macs.
+Supports both Intel and Apple Silicon architectures:
 
 ```shell
 CC=${ARCH}-linux-musl-gcc cargo build --package aya-telementry --release \
   --target=${ARCH}-unknown-linux-musl \
   --config=target.${ARCH}-unknown-linux-musl.linker=\"${ARCH}-linux-musl-gcc\"
 ```
-The cross-compiled program `target/${ARCH}-unknown-linux-musl/release/aya-telementry` can be
-copied to a Linux server or VM and run there.
+
+Deploy the binary from `target/${ARCH}-unknown-linux-musl/release/aya-telementry` to your Linux target system.
+
+## Architecture
+
+- **aya-telementry**: User-space application for event processing and display
+- **aya-telementry-ebpf**: Kernel-space eBPF program for packet capture
+- **aya-telementry-common**: Shared data structures and types
 
 ## License
 

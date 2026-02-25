@@ -3,6 +3,8 @@
 
 mod common;
 
+const NUM_QUEUES: u16 = 64;
+
 use aya_ebpf::{helpers::{bpf_get_current_pid_tgid, generated::bpf_ktime_get_ns}, macros::tracepoint, programs::TracePointContext};
 use aya_log_ebpf::info;
 use aya_ebpf::helpers::bpf_probe_read_kernel;
@@ -47,6 +49,12 @@ fn try_aya_telementry(ctx: TracePointContext) -> Result<u32, u32> {
     let mut is_quic = 0u8;
     let mut is_long = 0u8;
     let mut cid_version = 0u8;
+
+    let mut dcid_len:u8 = 0;
+    let mut backend_id: u16 = 0;
+    let mut queue_id: u16 = 0;
+
+    let mut cid_data = [0u8; 20];
 
     // Read sk_buff.data pointer (offset varies, typically around 216 for kernel 6.x)
     // This points to the start of packet data
@@ -113,6 +121,18 @@ fn try_aya_telementry(ctx: TracePointContext) -> Result<u32, u32> {
                             if quic_offset + 6 < 64 {
                                 cid_version = pkt_data[quic_offset + 6];
                             }
+                            dcid_len = pkt_data[quic_offset + 5];
+                            // CID (8 bytes)
+                            // [0] version 
+                            // [1] flags
+                            // [2] backend_id (MSB)
+                            // [3] backend_id (LSB)
+                            // [4..] random salt
+                            if dcid_len >= 4 && quic_offset + 9 < 64 {
+                                backend_id = ((pkt_data[quic_offset + 2] as u16) << 8) | (pkt_data[quic_offset + 3] as u16);
+                                queue_id = backend_id % NUM_QUEUES;
+                            }
+                            cid_data.copy_from_slice(&pkt_data[quic_offset + 6..quic_offset + 6 + core::cmp::min(dcid_len as usize, 20)]);
                         } else if quic_flags & 0x40 != 0 {
                             // Short header: bit 6 (0x40) set, bit 7 clear
                             // This is a heuristic - short headers don't have a fixed pattern
@@ -167,6 +187,10 @@ fn try_aya_telementry(ctx: TracePointContext) -> Result<u32, u32> {
         is_quic,
         is_long_header: is_long,
         cid_version,
+        dcid_len,
+        backend_id,
+        queue_id,
+        cid: cid_data,
     };
 
     if let Some(mut entry) = EVENTS.reserve::<Event>(0) {

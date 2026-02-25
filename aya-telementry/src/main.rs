@@ -94,6 +94,8 @@ async fn main() -> anyhow::Result<()> {
                                 event.cid_version,
                                 proto_name,
                             );
+                            println!("backend_id={} queue_id={} dcid_len={}", event.backend_id, event.queue_id, event.dcid_len);
+                            println!("CID (first 20 bytes): {:02x?}", &event.cid[..]);
                         } else if event.is_udp == 1 {
                             // UDP (non-QUIC) packets with less prominence
                             println!(
